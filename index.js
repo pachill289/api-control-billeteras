@@ -9,6 +9,7 @@ import {
   SystemProgram,
   Transaction,
   PublicKey,
+  VersionedTransaction
 } from "@solana/web3.js";
 import dotenv from "dotenv";
 import { Buffer } from "buffer";
@@ -159,34 +160,113 @@ app.post("/fund-wallets", async (req, res) => {
   }
 });
 
-app.all("/balance", async (req, res) => {
-  try {
-    // aceptar tanto GET (query) como POST (body)
-    const address = req.method === "GET" ? req.query.address : req.body.address;
-    if (!address)
-      return res.status(400).json({
-        error: "address es requerido (query ?address= o body { address })",
-      });
+const SOL_MINT = "So11111111111111111111111111111111111111112";
 
-    // validar PublicKey
-    let pub;
-    try {
-      pub = new PublicKey(address);
-    } catch (e) {
-      return res.status(400).json({ error: "address inválida" });
+app.post("/buy-token", async (req, res) => {
+  try {
+    const { userPublicKey, toMint, amount, slippage } = req.body;
+
+    if (!userPublicKey || !toMint || !amount) {
+      return res.status(400).json({
+        error: "Faltan parámetros requeridos: userPublicKey, toMint, amount",
+      });
     }
 
-    // obtener balance en lamports
-    const lamports = await connection.getBalance(pub, "finalized"); // o 'confirmed' si prefieres
-    const sol = lamports / LAMPORTS_PER_SOL;
+    // Validar public key
+    try {
+      new PublicKey(userPublicKey);
+    } catch {
+      return res.status(400).json({ error: "userPublicKey inválido" });
+    }
 
+    // Convertir a lamports (1 SOL = 1e9 lamports)
+    const lamports = Math.floor(parseFloat(amount) * 1e9);
+    const slippageBps = Math.floor((parseFloat(slippage || 0.5)) * 100);
+
+    // === 1️⃣ OBTENER COTIZACIÓN ===
+    const quoteUrl = `https://lite-api.jup.ag/swap/v1/quote?inputMint=${SOL_MINT}&outputMint=${toMint}&amount=${lamports}&slippageBps=${slippageBps}`;
+    const quoteResponse = await fetch(quoteUrl);
+
+    if (!quoteResponse.ok) {
+      const err = await quoteResponse.text();
+      throw new Error(`Error al obtener quote (${quoteResponse.status}): ${err}`);
+    }
+
+    const quoteData = await quoteResponse.json();
+
+    // === 2️⃣ CONSTRUIR TRANSACCIÓN ===
+    const swapUrl = "https://lite-api.jup.ag/swap/v1/swap";
+    const swapResponse = await fetch(swapUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userPublicKey: userPublicKey, // debe ser string
+        quoteResponse: quoteData,     // el objeto quote recibido
+        wrapAndUnwrapSol: true,
+      }),
+    });
+
+    if (!swapResponse.ok) {
+      const err = await swapResponse.text();
+      throw new Error(`Error al construir swap (${swapResponse.status}): ${err}`);
+    }
+
+    const swapData = await swapResponse.json();
+
+    // === 3️⃣ RESPUESTA FINAL ===
     return res.status(200).json({
-      address: pub.toBase58(),
-      lamports, // 1 SOL = 1,000,000,000 lamports
-      sol,
+      success: true,
+      message: "Transacción de swap generada correctamente",
+      quote: quoteData,
+      swapTransaction: swapData.swapTransaction,
     });
   } catch (err) {
-    console.error("balance error:", err);
+    console.error("buy-token endpoint error:", err);
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.post("/execute-swap", async (req, res) => {
+  try {
+    const { swapTransaction, rpc } = req.body;
+
+    if (!swapTransaction) {
+      return res.status(400).json({ error: "Falta parámetro swapTransaction" });
+    }
+
+    // --- Configurar conexión ---
+    const connection = new Connection(
+      rpc || "https://mainnet.helius-rpc.com/?api-key=3506b31d-e36e-4031-96b7-a683a4936146",
+      "confirmed"
+    );
+
+    // --- Construir Keypair desde secret key base64 ---
+    const secretKeyBase64 = "DLLguAhypOp8jvm2SFI0Zu0+ALUXhX8P4liEmOVfuT4S5mZ9wYc35MiqJPim62DLdTffDqJnjfG4zbZNbAGdHg==";
+    const secretKeyBytes = Uint8Array.from(Buffer.from(secretKeyBase64, "base64"));
+    const payer = Keypair.fromSecretKey(secretKeyBytes);
+
+    // --- Decodificar transacción base64 ---
+    const txBuffer = Buffer.from(swapTransaction, "base64");
+
+    // --- Deserializar VersionedTransaction ---
+    const transaction = VersionedTransaction.deserialize(txBuffer);
+
+    // --- Firmar la transacción con el Keypair ---
+    transaction.sign([payer]);
+
+    // --- Enviar a la red ---
+    const txid = await connection.sendRawTransaction(transaction.serialize());
+
+    // --- Confirmar transacción ---
+    await connection.confirmTransaction(txid, "confirmed");
+
+    return res.status(200).json({
+      success: true,
+      message: "Swap ejecutado correctamente",
+      txid,
+    });
+  } catch (err) {
+    console.error("execute-swap error:", err);
     return res.status(500).json({ error: err.message || String(err) });
   }
 });
