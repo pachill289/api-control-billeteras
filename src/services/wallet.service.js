@@ -30,6 +30,33 @@ export const createWallet = async (count) => {
   }
 };
 
+// crear wallets para actividad
+export const createWalletActivity = async (count) => {
+  try {
+    const n = Number(count) || 1;
+    if (n <= 0 || n > 1000)
+      return res.status(400).json({ error: "count must be 1..1000" });
+
+    const created = [];
+    for (let i = 0; i < n; i++) {
+      const kp = Keypair.generate();
+      const publicKey = kp.publicKey.toBase58();
+      const secretKey = Buffer.from(kp.secretKey).toString("base64");
+      created.push({ publicKey, secretKey });
+    }
+
+    // Guardar (append) en WALLET_STORE
+    const existing = await readWallets();
+    const all = existing.concat(created);
+    await saveWallets(all);
+    return all;
+
+  } catch (err) {
+    console.error("create-wallets error:", err);
+    return err.message || String(err);
+  }
+};
+
 // info wallets
 export const getWalletsAccountInfo = async (commitment = "confirmed") => {
   const wallets = readWallets();
