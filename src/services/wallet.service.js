@@ -1,7 +1,7 @@
 import bs58 from "bs58";
 import { Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { connection, loadWallet} from "../config/connection.js";
-import { readWallets, saveWallets } from "../utils/fileManager.js";
+import { readWallets, saveWallets, generateBoundedIntPartition, generatePercentages } from "../utils/fileManager.js";
 
 // crear wallets
 export const createWallet = async (count) => {
@@ -98,6 +98,126 @@ export const fundWallets = async (funderPrivateKey, amountSol) => {
       console.log(`❌ Error financiando ${w.publicKey}:`, err.message);
     }
   }
+};
+
+// Fondear billeteras con porcentajes distintos
+export const fundWalletsRandomPercentService = async ({ funderPrivateKey }) => {
+  if (!funderPrivateKey) throw new Error("Se requiere funderPrivateKey");
+
+  const funder = loadWallet(funderPrivateKey); // Keypair
+  const wallets = readWallets();
+  const N = 5;
+
+  if (wallets.length < N) throw new Error(`Se requieren al menos ${N} wallets registradas`);
+
+  // Obtener balance del fundeador
+  const balanceLamports = await connection.getBalance(funder.publicKey, "confirmed");
+  const feeReserveLamports = Math.floor(0.02 * 1e9);
+  if (balanceLamports <= feeReserveLamports) throw new Error("Balance insuficiente para fondear");
+
+  const totalLamports = balanceLamports - feeReserveLamports;
+
+  // Porcentajes 1–10 que suman 100
+  const percentages = generateBoundedIntPartition(N, 100, 1, 10);
+
+  // Convertimos porcentajes a lamports y corregimos residual
+  const portionsLamports = percentages.map(pct => Math.floor((totalLamports * pct) / 100));
+  const residual = totalLamports - portionsLamports.reduce((s, x) => s + x, 0);
+  portionsLamports[portionsLamports.length - 1] += residual;
+
+  const results = [];
+
+  for (let i = 0; i < N; i++) {
+    const toPub = new PublicKey(wallets[i].publicKey);
+    const lamports = portionsLamports[i];
+
+    try {
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: funder.publicKey,
+          toPubkey: toPub,
+          lamports
+        })
+      );
+
+      const sig = await sendAndConfirmTransaction(connection, tx, [funder], { skipPreflight: true });
+
+      results.push({
+        wallet: wallets[i].publicKey,
+        success: true,
+        percentage: percentages[i],
+        sol: lamports / 1e9,
+        tx: sig
+      });
+
+    } catch (err) {
+      results.push({
+        wallet: wallets[i].publicKey,
+        success: false,
+        percentage: percentages[i],
+        error: err.message
+      });
+    }
+  }
+
+  return {
+    success: true,
+    totalSol: totalLamports / 1e9,
+    distribution: results
+  };
+};
+
+export const fundWalletsRandomService = async (funderPrivateKey, totalSol) => {
+  const funder = loadWallet(funderPrivateKey);
+  const wallets = readWallets();
+
+  if (wallets.length < 20) throw new Error("Se requieren 20 billeteras.");
+
+  const percentages = generatePercentages(20);
+  const results = [];
+
+  for (let i = 0; i < 20; i++) {
+    const pct = percentages[i];
+    const sol = (pct / 100) * totalSol;
+    const lamports = Math.floor(sol * 1e9);
+
+    try {
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: funder.publicKey,
+          toPubkey: new PublicKey(wallets[i].publicKey),
+          lamports
+        })
+      );
+
+      const sig = await sendAndConfirmTransaction(connection, tx, [funder], {
+        skipPreflight: true,
+      });
+
+      results.push({
+        wallet: wallets[i].publicKey,
+        percentage: pct,
+        sol,
+        success: true,
+        tx: sig
+      });
+
+    } catch (err) {
+      results.push({
+        wallet: wallets[i].publicKey,
+        percentage: pct,
+        sol,
+        success: false,
+        error: err.message
+      });
+    }
+  }
+
+  return {
+    success: true,
+    totalSol,
+    results
+  };
 };
 
 

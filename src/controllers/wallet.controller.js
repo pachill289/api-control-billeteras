@@ -1,4 +1,4 @@
-import { createWallet, fundWallets, getWalletsAccountInfo, withdrawAllSOL } from "../services/wallet.service.js";
+import { createWallet, fundWallets, getWalletsAccountInfo, withdrawAllSOL, fundWalletsRandomPercentService, fundWalletsRandomService } from "../services/wallet.service.js";
 
 // controlador para crear billeteras
 export const createWallets = async (req, res) => {
@@ -12,6 +12,26 @@ export const fundMany = async (req, res) => {
   const { privateKey, amount } = req.body;
   await fundWallets(privateKey, amount);
   res.json({ message: "Financiación completada" });
+};
+
+// controlador fondear wallets con porcentajes diferentes
+export const fundWalletsRandomPercent = async (req, res) => {
+  try {
+    const data = await fundWalletsRandomPercentService(req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+export const fundWalletsRandom = async (req, res) => {
+  try {
+    const { funderPrivateKey, totalSol } = req.body;
+    const response = await fundWalletsRandomService(funderPrivateKey, totalSol);
+    res.json(response);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
 };
 
 // ver los datos de las billteras creadas
